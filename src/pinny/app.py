@@ -73,6 +73,15 @@ I18N: dict[str, dict[str, str]] = {
         "download_done": "다운로드 완료: {path}",
         "cli_exists": "이미 존재하는 좌표입니다.",
         "argparse_desc": "xcrun simctl location 명령을 관리하기 쉬운 TUI/CLI 도구",
+        "argparse_epilog": (
+            "실행 예시:\n"
+            "  pinny           보유 목록 표시\n"
+            "  pinny 2         2번 위치 즉시 적용\n"
+            "  pinny tui       TUI 실행\n"
+            "  pinny add ...   위치 추가\n"
+            "  pinny cover ... 전체 덮어쓰기\n"
+            "  pinny download  locations.json 다운로드"
+        ),
         "argparse_add_help": "위치 추가",
         "argparse_add_desc": "위치를 단건 또는 JSON 파일로 추가합니다.",
         "argparse_add_items_help": "<lat> <lon> <description> 또는 JSON 파일 경로",
@@ -87,7 +96,10 @@ I18N: dict[str, dict[str, str]] = {
         "argparse_cover_desc": "JSON 파일로 전체 목록을 덮어씁니다.",
         "argparse_cover_path_help": "입력 JSON 파일",
         "argparse_download_help": "저장된 전체 목록을 locations.json 파일로 다운로드",
+        "argparse_tui_help": "TUI 스타일 인터랙티브 실행",
         "json_error": "JSON 파싱 오류: {error}",
+        "apply_usage": "사용법: pinny <번호>",
+        "apply_done_with_desc": "{message} ({desc})",
     },
     "en": {
         "invalid_item_format": "Item {index} has an invalid format.",
@@ -142,6 +154,15 @@ I18N: dict[str, dict[str, str]] = {
         "download_done": "Downloaded: {path}",
         "cli_exists": "Location already exists.",
         "argparse_desc": "TUI/CLI wrapper for xcrun simctl location",
+        "argparse_epilog": (
+            "Examples:\n"
+            "  pinny           Show saved locations\n"
+            "  pinny 2         Apply location #2\n"
+            "  pinny tui       Run interactive TUI\n"
+            "  pinny add ...   Add locations\n"
+            "  pinny cover ... Replace all\n"
+            "  pinny download  Download locations.json"
+        ),
         "argparse_add_help": "Add location",
         "argparse_add_desc": "Add a single location or import from a JSON file.",
         "argparse_add_items_help": "<lat> <lon> <description> or JSON file path",
@@ -156,7 +177,10 @@ I18N: dict[str, dict[str, str]] = {
         "argparse_cover_desc": "Replace all locations from a JSON file.",
         "argparse_cover_path_help": "Input JSON file",
         "argparse_download_help": "Download all saved locations as locations.json",
+        "argparse_tui_help": "Run interactive TUI",
         "json_error": "JSON parse error: {error}",
+        "apply_usage": "Usage: pinny <number>",
+        "apply_done_with_desc": "{message} ({desc})",
     },
 }
 
@@ -284,6 +308,18 @@ def load_default_locations() -> list[Location]:
     return [_parse_location_item(item, idx + 1) for idx, item in enumerate(raw)]
 
 
+def load_or_seed_locations(path: Path | None = None) -> list[Location]:
+    data_path = path or default_data_path()
+    locations = load_locations(data_path)
+    if locations:
+        return locations
+
+    defaults = load_default_locations()
+    if defaults:
+        save_locations(defaults, data_path)
+    return defaults
+
+
 def save_locations(locations: list[Location], path: Path | None = None) -> None:
     data_path = path or default_data_path()
     data_path.parent.mkdir(parents=True, exist_ok=True)
@@ -353,6 +389,20 @@ def run_simctl_set_location(location: Location) -> tuple[bool, str]:
     return False, msg("set_fail", detail=short_detail)
 
 
+def format_locations_table(locations: list[Location]) -> list[str]:
+    no_width = max(2, len(str(len(locations))))
+    lines = [
+        f"{'No':>{no_width}}  {'Latitude':>10}  {'Longitude':>11}  Description",
+        "-" * 70,
+    ]
+    for idx, item in enumerate(locations, start=1):
+        lines.append(
+            f"{idx:>{no_width}}  {item.latitude:>10.6f}  {item.longitude:>11.6f}  {item.description}"
+        )
+    lines.append("-" * 70)
+    return lines
+
+
 class PinnyTUI:
     MENU_SET = 0
     MENU_ADD = 1
@@ -362,11 +412,7 @@ class PinnyTUI:
 
     def __init__(self, data_path: Path):
         self.data_path = data_path
-        self.locations = load_locations(data_path)
-        if not self.locations:
-            self.locations = load_default_locations()
-            if self.locations:
-                save_locations(self.locations, self.data_path)
+        self.locations = load_or_seed_locations(data_path)
         self.menus = [
             msg("menu_set"),
             msg("menu_add"),
@@ -866,10 +912,35 @@ def command_download(data_path: Path | None = None, output_path: Path | None = N
     return 0
 
 
+def command_list(data_path: Path | None = None) -> int:
+    locations = load_or_seed_locations(data_path)
+    for line in format_locations_table(locations):
+        print(line)
+    return 0
+
+
+def command_apply_index(index: int, data_path: Path | None = None) -> int:
+    locations = load_or_seed_locations(data_path)
+    target_index = index - 1
+    if target_index < 0 or target_index >= len(locations):
+        print(msg("status_number_range"), file=sys.stderr)
+        return 2
+
+    target = locations[target_index]
+    ok, message = run_simctl_set_location(target)
+    if ok:
+        print(msg("apply_done_with_desc", message=message, desc=target.description))
+    else:
+        print(message)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pinny",
         description=msg("argparse_desc"),
+        epilog=msg("argparse_epilog"),
+        formatter_class=argparse.RawTextHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -896,22 +967,35 @@ def build_parser() -> argparse.ArgumentParser:
     cover_parser.add_argument("json_path", help=msg("argparse_cover_path_help"))
 
     subparsers.add_parser("download", help=msg("argparse_download_help"))
+    subparsers.add_parser("tui", help=msg("argparse_tui_help"))
 
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = argv if argv is not None else sys.argv[1:]
 
     try:
+        if len(raw_argv) == 0:
+            return command_list()
+
+        if raw_argv[0].isdigit():
+            if len(raw_argv) != 1:
+                print(msg("apply_usage"), file=sys.stderr)
+                return 2
+            return command_apply_index(int(raw_argv[0]))
+
+        parser = build_parser()
+        args = parser.parse_args(raw_argv)
         if args.command == "add":
             return command_add(args.items)
         if args.command == "cover":
             return command_cover(args.json_path)
         if args.command == "download":
             return command_download()
-        return run_tui()
+        if args.command == "tui":
+            return run_tui()
+        return command_list()
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

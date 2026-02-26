@@ -4,7 +4,9 @@
 
 ## 기능
 
-- `pinny` : TUI 실행 (위치지정/추가/삭제/정렬/종료)
+- `pinny` : 보유 목록을 TUI 스타일 테이블로 출력
+- `pinny <number>` : 해당 번호의 위치를 시뮬레이터에 즉시 적용
+- `pinny tui` : TUI 실행 (위치지정/추가/삭제/정렬/종료)
 - `pinny add <lat> <lon> <description>` : 단건 추가
 - `pinny add <list.json>` : 목록 추가 (중복 좌표 자동 생략)
 - `pinny cover <list.json>` : 목록으로 전체 덮어쓰기

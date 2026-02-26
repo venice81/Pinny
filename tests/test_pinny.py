@@ -12,11 +12,14 @@ from pinny.app import (
     PinnyTUI,
     app_language,
     command_add,
+    command_apply_index,
     command_cover,
     command_download,
+    command_list,
     load_default_locations,
     load_json_locations,
     load_locations,
+    main,
     merge_unique,
     msg,
     parse_inline_location,
@@ -140,6 +143,57 @@ class PinnyTests(unittest.TestCase):
                 new=2,
             )
             self.assertEqual(app.selected_row, 0)
+
+    def test_command_list_prints_tui_style_table(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            data_path = Path(td) / "locations.json"
+            save_locations([Location(37.551169, 126.988227, "남산타워")], data_path)
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                rc = command_list(data_path=data_path)
+
+            output = buffer.getvalue()
+            self.assertEqual(rc, 0)
+            self.assertIn("No", output)
+            self.assertIn("Latitude", output)
+            self.assertIn("남산타워", output)
+
+    def test_command_apply_index_uses_number(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            data_path = Path(td) / "locations.json"
+            first = Location(37.551169, 126.988227, "남산타워")
+            second = Location(48.85837, 2.294481, "에펠탑")
+            save_locations([first, second], data_path)
+
+            buffer = io.StringIO()
+            with patch("pinny.app.run_simctl_set_location", return_value=(True, "ok")) as run_set:
+                with redirect_stdout(buffer):
+                    rc = command_apply_index(2, data_path=data_path)
+
+            self.assertEqual(rc, 0)
+            run_set.assert_called_once_with(second)
+            self.assertIn("ok", buffer.getvalue())
+            self.assertIn("에펠탑", buffer.getvalue())
+
+    def test_main_default_and_number_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            data_path = Path(td) / "locations.json"
+            save_locations([Location(37.551169, 126.988227, "남산타워")], data_path)
+
+            with patch.dict(os.environ, {"PINNY_DATA_PATH": str(data_path)}, clear=False):
+                list_buffer = io.StringIO()
+                with redirect_stdout(list_buffer):
+                    rc = main([])
+                self.assertEqual(rc, 0)
+                self.assertIn("남산타워", list_buffer.getvalue())
+
+                with patch("pinny.app.run_simctl_set_location", return_value=(True, "applied")):
+                    apply_buffer = io.StringIO()
+                    with redirect_stdout(apply_buffer):
+                        rc = main(["1"])
+                self.assertEqual(rc, 0)
+                self.assertIn("applied", apply_buffer.getvalue())
 
     def test_delete_requires_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as td:
