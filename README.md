@@ -8,7 +8,7 @@
 - `pinny add <lat> <lon> <description>` : 단건 추가
 - `pinny add <list.json>` : 목록 추가 (중복 좌표 자동 생략)
 - `pinny cover <list.json>` : 목록으로 전체 덮어쓰기
-- `pinny download` : 전체 목록 JSON 출력
+- `pinny download` : 현재 폴더에 `locations.json` 다운로드
 - `pinny --help` : 도움말
 
 저장 파일 기본 경로는 `~/.pinny/locations.json`입니다.

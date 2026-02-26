@@ -70,13 +70,23 @@ I18N: dict[str, dict[str, str]] = {
         "add_from_file_done": "{count}개 추가됨 (중복 제외)",
         "add_single_done": "1개 추가됨",
         "cover_done": "{count}개로 덮어쓰기 완료",
+        "download_done": "다운로드 완료: {path}",
         "cli_exists": "이미 존재하는 좌표입니다.",
         "argparse_desc": "xcrun simctl location 명령을 관리하기 쉬운 TUI/CLI 도구",
         "argparse_add_help": "위치 추가",
+        "argparse_add_desc": "위치를 단건 또는 JSON 파일로 추가합니다.",
         "argparse_add_items_help": "<lat> <lon> <description> 또는 JSON 파일 경로",
+        "argparse_add_epilog": (
+            "JSON 파일 구조 예시:\n"
+            "1) 배열 루트\n"
+            '[\n  {{"latitude": 37.551169, "longitude": 126.988227, "description": "남산타워"}}\n]\n\n'
+            "2) locations 키 사용 + 축약 키 허용\n"
+            '{{\n  "locations": [\n    {{"lat": 48.858370, "lon": 2.294481, "desc": "파리 에펠탑"}}\n  ]\n}}'
+        ),
         "argparse_cover_help": "JSON 목록으로 전체 덮어쓰기",
+        "argparse_cover_desc": "JSON 파일로 전체 목록을 덮어씁니다.",
         "argparse_cover_path_help": "입력 JSON 파일",
-        "argparse_download_help": "저장된 전체 목록을 JSON으로 출력",
+        "argparse_download_help": "저장된 전체 목록을 locations.json 파일로 다운로드",
         "json_error": "JSON 파싱 오류: {error}",
     },
     "en": {
@@ -129,13 +139,23 @@ I18N: dict[str, dict[str, str]] = {
         "add_from_file_done": "{count} added (duplicates skipped)",
         "add_single_done": "1 added",
         "cover_done": "Replaced with {count} items",
+        "download_done": "Downloaded: {path}",
         "cli_exists": "Location already exists.",
         "argparse_desc": "TUI/CLI wrapper for xcrun simctl location",
         "argparse_add_help": "Add location",
+        "argparse_add_desc": "Add a single location or import from a JSON file.",
         "argparse_add_items_help": "<lat> <lon> <description> or JSON file path",
+        "argparse_add_epilog": (
+            "JSON file examples:\n"
+            "1) list root\n"
+            '[\n  {{"latitude": 37.551169, "longitude": 126.988227, "description": "Namsan Tower"}}\n]\n\n'
+            "2) object with locations + short keys\n"
+            '{{\n  "locations": [\n    {{"lat": 48.858370, "lon": 2.294481, "desc": "Eiffel Tower"}}\n  ]\n}}'
+        ),
         "argparse_cover_help": "Replace all locations from JSON list",
+        "argparse_cover_desc": "Replace all locations from a JSON file.",
         "argparse_cover_path_help": "Input JSON file",
-        "argparse_download_help": "Print all saved locations as JSON",
+        "argparse_download_help": "Download all saved locations as locations.json",
         "json_error": "JSON parse error: {error}",
     },
 }
@@ -835,10 +855,14 @@ def command_cover(json_path: str, data_path: Path | None = None) -> int:
     return 0
 
 
-def command_download(data_path: Path | None = None) -> int:
+def command_download(data_path: Path | None = None, output_path: Path | None = None) -> int:
     locations = load_locations(data_path)
     payload = [location.to_dict() for location in locations]
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    target = output_path or (Path.cwd() / "locations.json")
+    with target.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    print(msg("download_done", path=target))
     return 0
 
 
@@ -849,14 +873,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    add_parser = subparsers.add_parser("add", help=msg("argparse_add_help"))
+    add_parser = subparsers.add_parser(
+        "add",
+        help=msg("argparse_add_help"),
+        description=msg("argparse_add_desc"),
+        epilog=msg("argparse_add_epilog"),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
     add_parser.add_argument(
         "items",
         nargs="+",
         help=msg("argparse_add_items_help"),
     )
 
-    cover_parser = subparsers.add_parser("cover", help=msg("argparse_cover_help"))
+    cover_parser = subparsers.add_parser(
+        "cover",
+        help=msg("argparse_cover_help"),
+        description=msg("argparse_cover_desc"),
+        epilog=msg("argparse_add_epilog"),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
     cover_parser.add_argument("json_path", help=msg("argparse_cover_path_help"))
 
     subparsers.add_parser("download", help=msg("argparse_download_help"))

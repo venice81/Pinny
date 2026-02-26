@@ -169,6 +169,7 @@ class PinnyTests(unittest.TestCase):
             data_path = Path(td) / "locations.json"
             add_path = Path(td) / "add.json"
             cover_path = Path(td) / "cover.json"
+            download_path = Path(td) / "downloaded_locations.json"
 
             add_payload = [
                 {
@@ -202,10 +203,12 @@ class PinnyTests(unittest.TestCase):
 
             buffer = io.StringIO()
             with redirect_stdout(buffer):
-                rc = command_download(data_path=data_path)
+                rc = command_download(data_path=data_path, output_path=download_path)
             self.assertEqual(rc, 0)
+            self.assertIn(str(download_path), buffer.getvalue())
+            self.assertTrue(download_path.exists())
 
-            downloaded = json.loads(buffer.getvalue())
+            downloaded = json.loads(download_path.read_text(encoding="utf-8"))
             self.assertEqual(len(downloaded), 1)
             self.assertEqual(downloaded[0]["description"], "남극 세종 과학기지")
 
