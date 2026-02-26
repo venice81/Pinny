@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,7 @@ I18N: dict[str, dict[str, str]] = {
         "menu_delete": "삭제",
         "menu_sort": "정렬",
         "menu_exit": "종료",
-        "help_set": "설정 : ↑↓ 이동 후 선택 혹은 번호 입력",
+        "help_set": "설정 : ↑↓ 이동 후 선택 혹은 번호 입력, Ctrl+O:지도 열기",
         "help_add": "추가 : <latitude> <longitude> <description>",
         "help_delete": "삭제 : ↑↓ 이동 후 Enter, y/n 확인",
         "help_sort": "정렬 : 1:Latitude   2:Longitude   3:Description",
@@ -60,7 +61,9 @@ I18N: dict[str, dict[str, str]] = {
         "status_sort_lon_done": "경도 기준 정렬 완료",
         "status_sort_desc_done": "설명 기준 정렬 완료",
         "menu_label": "메뉴(←/→) : ",
-        "quit_shortcut": "종료 숏컷 : ctrl + c + c",
+        "status_open_map_done": "브라우저에서 열기: {url}",
+        "status_open_map_failed": "브라우저를 열지 못했습니다.",
+        "status_open_map_error": "브라우저 열기 실패: {detail}",
         "input_label": "Pinny: ",
         "file_not_found": "파일을 찾을 수 없습니다: {path}",
         "add_usage": "add 사용법: pinny add <lat> <lon> <description> 또는 pinny add <list.json> (콤마 허용)",
@@ -94,7 +97,7 @@ I18N: dict[str, dict[str, str]] = {
         "menu_delete": "Delete",
         "menu_sort": "Sort",
         "menu_exit": "Exit",
-        "help_set": "Set: move with ↑↓ then Enter, or type number",
+        "help_set": "Set: move with ↑↓ then Enter, type number, or press Ctrl+O for map",
         "help_add": "Add: <latitude> <longitude> <description>",
         "help_delete": "Delete: move with ↑↓ then Enter, confirm with y/n",
         "help_sort": "Sort: 1:Latitude   2:Longitude   3:Description",
@@ -117,7 +120,9 @@ I18N: dict[str, dict[str, str]] = {
         "status_sort_lon_done": "Sorted by longitude.",
         "status_sort_desc_done": "Sorted by description.",
         "menu_label": "Menu(←/→) : ",
-        "quit_shortcut": "Quit shortcut : ctrl + c + c",
+        "status_open_map_done": "Opened in browser: {url}",
+        "status_open_map_failed": "Could not open browser.",
+        "status_open_map_error": "Browser open failed: {detail}",
         "input_label": "Pinny: ",
         "file_not_found": "File not found: {path}",
         "add_usage": "Usage: pinny add <lat> <lon> <description> or pinny add <list.json> (comma allowed)",
@@ -390,6 +395,10 @@ class PinnyTUI:
                 self.status = msg("status_ctrlc_again")
                 continue
 
+            if key == "\x0f" and self.menu_index == self.MENU_SET:
+                self._action_open_in_maps()
+                continue
+
             if self._handle_delete_confirmation(key):
                 continue
 
@@ -524,36 +533,62 @@ class PinnyTUI:
             return False
         return True
 
-    def _action_set_location(self) -> None:
+    def _resolve_target_index(self) -> int | None:
         if not self.locations:
             self.status = msg("status_no_location_set")
             self.input_buffer = ""
             self.input_cursor = 0
-            return
+            return None
 
         target_index = self.selected_row
-        if self.input_buffer.strip():
+        raw = self.input_buffer.strip()
+        if raw:
             try:
-                target_no = int(self.input_buffer.strip())
+                target_no = int(raw)
             except ValueError:
                 self.status = msg("status_number_only")
                 self.input_buffer = ""
                 self.input_cursor = 0
-                return
+                return None
             target_index = target_no - 1
 
         if target_index < 0 or target_index >= len(self.locations):
             self.status = msg("status_number_range")
             self.input_buffer = ""
             self.input_cursor = 0
-            return
+            return None
 
         self.selected_row = target_index
+        return target_index
+
+    def _action_set_location(self) -> None:
+        target_index = self._resolve_target_index()
+        if target_index is None:
+            return
+
         location = self.locations[target_index]
         _, message = run_simctl_set_location(location)
         self.status = message
         self.input_buffer = ""
         self.input_cursor = 0
+
+    def _action_open_in_maps(self) -> None:
+        target_index = self._resolve_target_index()
+        if target_index is None:
+            return
+
+        location = self.locations[target_index]
+        url = f"https://www.google.com/maps/search/?api=1&query={location.latitude:.6f},{location.longitude:.6f}"
+        try:
+            opened = webbrowser.open(url, new=2)
+        except Exception as exc:
+            self.status = msg("status_open_map_error", detail=str(exc))
+            return
+
+        if opened:
+            self.status = msg("status_open_map_done", url=url)
+        else:
+            self.status = msg("status_open_map_failed")
 
     def _action_add_location(self) -> None:
         raw = self.input_buffer.strip()
@@ -655,7 +690,7 @@ class PinnyTUI:
         self._safe_add(stdscr, 0, 0, header)
         self._safe_add(stdscr, 1, 0, "-" * max(10, min(width - 1, 70)))
 
-        footer_lines = 7
+        footer_lines = 6
         max_table_rows = max(1, height - (2 + footer_lines))
         table_rows = min(max_table_rows, max(5, len(self.locations)))
 
@@ -694,13 +729,12 @@ class PinnyTUI:
             attr = curses.A_REVERSE if idx == self.menu_index else 0
             self._safe_add(stdscr, menu_top + 1, menu_x, label, attr)
             menu_x += self._display_width(label)
-        self._safe_add(stdscr, menu_top + 2, 0, msg("quit_shortcut"))
-        self._safe_add(stdscr, menu_top + 3, 0, self.menu_help[self.menu_index])
-        self._safe_add(stdscr, menu_top + 4, 0, "-" * max(10, min(width - 1, 70)))
-        self._safe_add(stdscr, menu_top + 5, 0, self.status)
+        self._safe_add(stdscr, menu_top + 2, 0, self.menu_help[self.menu_index])
+        self._safe_add(stdscr, menu_top + 3, 0, "-" * max(10, min(width - 1, 70)))
+        self._safe_add(stdscr, menu_top + 4, 0, self.status)
 
         input_prefix = msg("input_label")
-        input_y = menu_top + 6
+        input_y = menu_top + 5
         self._safe_add(stdscr, input_y, 0, f"{input_prefix}{self.input_buffer}")
 
         cursor_x = self._display_width(input_prefix) + self._display_width(

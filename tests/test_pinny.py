@@ -120,6 +120,27 @@ class PinnyTests(unittest.TestCase):
             self.assertEqual(len(app.locations), 1)
             self.assertEqual(app.locations[0].description, "부산")
 
+    def test_open_map_uses_selected_or_typed_target(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            data_path = Path(td) / "locations.json"
+            first = Location(37.551169, 126.988227, "남산타워")
+            second = Location(48.85837, 2.294481, "에펠탑")
+            save_locations([first, second], data_path)
+
+            app = PinnyTUI(data_path)
+            app.menu_index = PinnyTUI.MENU_SET
+            app.selected_row = 1
+            app.input_buffer = "1"
+
+            with patch("pinny.app.webbrowser.open", return_value=True) as browser_open:
+                app._action_open_in_maps()
+
+            browser_open.assert_called_once_with(
+                "https://www.google.com/maps/search/?api=1&query=37.551169,126.988227",
+                new=2,
+            )
+            self.assertEqual(app.selected_row, 0)
+
     def test_delete_requires_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             data_path = Path(td) / "locations.json"
