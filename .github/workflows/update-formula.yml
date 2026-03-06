@@ -1,0 +1,55 @@
+name: Update Homebrew Formula
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to apply to Formula/pinny.rb
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update Formula
+        run: |
+          set -euo pipefail
+
+          formula="Formula/pinny.rb"
+          url="https://github.com/${{ github.repository }}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
+
+          curl -fsSL "$url" -o pinny.tar.gz
+          sha256="$(sha256sum pinny.tar.gz | awk '{print $1}')"
+
+          sed -i "s|^  url \".*\"|  url \"$url\"|" "$formula"
+          sed -i "s|^  sha256 \".*\"|  sha256 \"$sha256\"|" "$formula"
+
+      - name: Validate Formula
+        run: ruby -c Formula/pinny.rb
+
+      - name: Commit changes
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- Formula/pinny.rb; then
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/pinny.rb
+          git commit -m "Update formula for ${RELEASE_TAG}"
+          git push origin HEAD:main

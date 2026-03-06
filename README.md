@@ -1,17 +1,24 @@
 # Pinny
 
-`xcrun simctl location`을 쉽게 쓰기 위한 Python TUI/CLI 도구입니다.
+시뮬레이터 위치를 빠르게 바꾸고 저장해두는 macOS용 CLI/TUI 도구입니다.
+`xcrun simctl location`을 직접 외울 필요 없이, 자주 쓰는 좌표를 목록으로 관리하고 바로 적용할 수 있습니다.
 
-## 기능
+## 이런 때 사용합니다
 
-- `pinny` : 보유 목록을 TUI 스타일 테이블로 출력
-- `pinny <number>` : 해당 번호의 위치를 시뮬레이터에 즉시 적용
-- `pinny tui` : TUI 실행 (위치지정/추가/삭제/정렬/종료)
-- `pinny add <lat> <lon> <description>` : 단건 추가
-- `pinny add <list.json>` : 목록 추가 (중복 좌표 자동 생략)
-- `pinny cover <list.json>` : 목록으로 전체 덮어쓰기
-- `pinny download` : 현재 폴더에 `locations.json` 다운로드
-- `pinny --help` : 도움말
+- 출근길, 공항, 해외 도시처럼 테스트용 위치를 자주 바꿔야 할 때
+- 여러 좌표를 저장해두고 번호만 골라서 바로 적용하고 싶을 때
+- JSON 파일로 팀 공용 위치 목록을 가져오거나 덮어쓰고 싶을 때
+
+## 할 수 있는 일
+
+- `pinny`: 저장된 위치 목록 보기
+- `pinny <number>`: 선택한 번호의 위치를 시뮬레이터에 즉시 적용
+- `pinny tui`: 위치 선택, 추가, 삭제, 정렬을 화면에서 처리
+- `pinny add <lat> <lon> <description>`: 위치 1개 추가
+- `pinny add <list.json>`: JSON 파일에서 위치 목록 추가
+- `pinny cover <list.json>`: JSON 파일 내용으로 전체 교체
+- `pinny download`: 현재 위치 목록을 `locations.json`으로 저장
+- `pinny --help`: 도움말 확인
 
 저장 파일 기본 경로는 `~/.pinny/locations.json`입니다.
 환경 변수 `PINNY_DATA_PATH`로 변경할 수 있습니다.
@@ -21,9 +28,10 @@
 ## 설치 (Homebrew)
 
 ```bash
-brew tap venice81/pinny
-brew install venice81/pinny/pinny
+brew install --formula https://raw.githubusercontent.com/venice81/Pinny/main/Formula/pinny.rb
 ```
+
+formula 파일은 이 저장소의 `Formula/pinny.rb`에서 함께 관리합니다.
 
 ## 실행
 
@@ -31,6 +39,15 @@ brew install venice81/pinny/pinny
 pinny --help
 pinny
 pinny tui
+```
+
+## 빠른 예시
+
+```bash
+pinny add 37.5665 126.9780 "서울시청"
+pinny add 35.6895 139.6917 "도쿄"
+pinny
+pinny 1
 ```
 
 ## JSON 형식
@@ -53,3 +70,7 @@ pinny tui
   ]
 }
 ```
+
+## 라이선스
+
+MIT License
