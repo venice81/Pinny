@@ -5,7 +5,7 @@
 
 ## 이런 때 사용합니다
 
-- 출근길, 공항, 해외 도시처럼 테스트용 위치를 자주 바꿔야 할 때
+- 공항, 해외 도시처럼 테스트용 위치를 자주 바꿔야 할 때
 - 여러 좌표를 저장해두고 번호만 골라서 바로 적용하고 싶을 때
 - JSON 파일로 팀 공용 위치 목록을 가져오거나 덮어쓰고 싶을 때
 
@@ -28,10 +28,9 @@
 ## 설치 (Homebrew)
 
 ```bash
-brew install --formula https://raw.githubusercontent.com/venice81/Pinny/main/Formula/pinny.rb
+brew tap venice81/pinny https://github.com/venice81/Pinny
+brew install pinny
 ```
-
-formula 파일은 이 저장소의 `Formula/pinny.rb`에서 함께 관리합니다.
 
 ## 실행
 
