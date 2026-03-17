@@ -362,31 +362,71 @@ def parse_inline_location(raw: str) -> Location:
     return Location(latitude, longitude, description)
 
 
-def run_simctl_set_location(location: Location) -> tuple[bool, str]:
-    cmd = [
-        "xcrun",
-        "simctl",
-        "location",
-        "booted",
-        "set",
-        f"{location.latitude:.6f},{location.longitude:.6f}",
-    ]
+def find_booted_device_udids() -> list[str]:
+    proc = subprocess.run(
+        ["xcrun", "simctl", "list", "devices", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return []
+
     try:
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return []
+
+    devices = payload.get("devices")
+    if not isinstance(devices, dict):
+        return []
+
+    udids: list[str] = []
+    for runtime_devices in devices.values():
+        if not isinstance(runtime_devices, list):
+            continue
+        for device in runtime_devices:
+            if not isinstance(device, dict):
+                continue
+            if device.get("state") != "Booted":
+                continue
+            udid = device.get("udid")
+            if isinstance(udid, str) and udid:
+                udids.append(udid)
+    return udids
+
+
+def run_simctl_set_location(location: Location) -> tuple[bool, str]:
+    try:
+        targets = find_booted_device_udids() or ["booted"]
     except FileNotFoundError:
         return False, msg("set_fail_no_xcrun")
 
-    if proc.returncode == 0:
-        return (
-            True,
-            msg("set_done", lat=location.latitude, lon=location.longitude),
-        )
+    for target in targets:
+        cmd = [
+            "xcrun",
+            "simctl",
+            "location",
+            target,
+            "set",
+            f"{location.latitude:.6f},{location.longitude:.6f}",
+        ]
+        try:
+            proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        except FileNotFoundError:
+            return False, msg("set_fail_no_xcrun")
 
-    stderr = proc.stderr.strip()
-    stdout = proc.stdout.strip()
-    detail = stderr or stdout or msg("set_unknown_error")
-    short_detail = detail.splitlines()[-1]
-    return False, msg("set_fail", detail=short_detail)
+        if proc.returncode != 0:
+            stderr = proc.stderr.strip()
+            stdout = proc.stdout.strip()
+            detail = stderr or stdout or msg("set_unknown_error")
+            short_detail = detail.splitlines()[-1]
+            return False, msg("set_fail", detail=short_detail)
+
+    return (
+        True,
+        msg("set_done", lat=location.latitude, lon=location.longitude),
+    )
 
 
 def format_locations_table(locations: list[Location]) -> list[str]:

@@ -16,6 +16,7 @@ from pinny.app import (
     command_cover,
     command_download,
     command_list,
+    find_booted_device_udids,
     load_default_locations,
     load_json_locations,
     load_locations,
@@ -23,6 +24,7 @@ from pinny.app import (
     merge_unique,
     msg,
     parse_inline_location,
+    run_simctl_set_location,
     save_locations,
 )
 
@@ -158,6 +160,91 @@ class PinnyTests(unittest.TestCase):
             self.assertIn("No", output)
             self.assertIn("Latitude", output)
             self.assertIn("남산타워", output)
+
+    def test_find_booted_device_udids_returns_all_booted_devices(self) -> None:
+        payload = {
+            "devices": {
+                "com.apple.CoreSimulator.SimRuntime.iOS-18-0": [
+                    {
+                        "udid": "booted-1",
+                        "state": "Booted",
+                    },
+                    {
+                        "udid": "shutdown-1",
+                        "state": "Shutdown",
+                    },
+                ],
+                "com.apple.CoreSimulator.SimRuntime.iOS-17-5": [
+                    {
+                        "udid": "booted-2",
+                        "state": "Booted",
+                    }
+                ],
+            }
+        }
+
+        with patch("pinny.app.subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = json.dumps(payload)
+            run.return_value.stderr = ""
+
+            udids = find_booted_device_udids()
+
+        self.assertEqual(udids, ["booted-1", "booted-2"])
+
+    def test_run_simctl_set_location_applies_to_all_booted_devices(self) -> None:
+        location = Location(37.551169, 126.988227, "남산타워")
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], check: bool, capture_output: bool, text: bool):
+            calls.append(cmd)
+            result = unittest.mock.Mock()
+            if cmd[:4] == ["xcrun", "simctl", "list", "devices"]:
+                result.returncode = 0
+                result.stdout = json.dumps(
+                    {
+                        "devices": {
+                            "runtime": [
+                                {"udid": "booted-1", "state": "Booted"},
+                                {"udid": "booted-2", "state": "Booted"},
+                            ]
+                        }
+                    }
+                )
+                result.stderr = ""
+                return result
+
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        with patch("pinny.app.subprocess.run", side_effect=fake_run):
+            ok, message = run_simctl_set_location(location)
+
+        self.assertTrue(ok)
+        self.assertIn("37.551169", message)
+        self.assertEqual(
+            calls[1:],
+            [
+                [
+                    "xcrun",
+                    "simctl",
+                    "location",
+                    "booted-1",
+                    "set",
+                    "37.551169,126.988227",
+                ],
+                [
+                    "xcrun",
+                    "simctl",
+                    "location",
+                    "booted-2",
+                    "set",
+                    "37.551169,126.988227",
+                ],
+            ],
+        )
 
     def test_command_apply_index_uses_number(self) -> None:
         with tempfile.TemporaryDirectory() as td:
