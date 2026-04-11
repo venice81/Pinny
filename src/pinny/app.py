@@ -2,22 +2,30 @@ from __future__ import annotations
 
 import argparse
 import curses
+import hashlib
 import importlib.resources
 import json
 import locale
 import os
+import plistlib
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 import webbrowser
+from importlib.resources.abc import Traversable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 DATA_PATH_ENV = "PINNY_DATA_PATH"
 LANG_ENV = "PINNY_LANG"
+HOST_LOCATION_HELPER_TIMEOUT_SECONDS = 30
+HOST_LOCATION_BUNDLE_ID = "com.venice81.pinny.host-location"
+HOST_LOCATION_APP_NAME = "PinnyHostLocation"
 
 I18N: dict[str, dict[str, str]] = {
     "ko": {
@@ -33,12 +41,27 @@ I18N: dict[str, dict[str, str]] = {
         "set_done": "위치 설정 완료: {lat:.6f}, {lon:.6f}",
         "set_unknown_error": "알 수 없는 오류",
         "set_fail": "설정 실패: {detail}",
+        "here_fail_no_xcrun": "현재 위치 적용 실패: xcrun 명령을 찾을 수 없습니다.",
+        "here_done": "현재 Mac 위치 적용 완료: {lat:.6f}, {lon:.6f}",
+        "here_fail": "현재 위치 적용 실패: {detail}",
+        "here_fail_permission_denied": "현재 위치 적용 실패: Mac 위치 권한이 거부되었습니다. 시스템 설정 > 개인정보 보호 및 보안 > Location Services에서 PinnyHostLocation을 허용한 뒤 다시 실행하세요.",
+        "here_fail_location_services_disabled": "현재 위치 적용 실패: Mac 위치 서비스가 꺼져 있습니다.",
+        "here_fail_timeout": "현재 위치 적용 실패: 현재 위치를 가져오는 시간이 초과되었습니다.",
+        "here_fail_location_unavailable": "현재 위치 적용 실패: 현재 위치를 확인할 수 없습니다.",
+        "here_fail_location_error": "현재 위치 적용 실패: {detail}",
+        "here_fail_invalid_response": "현재 위치 적용 실패: 위치 조회 결과를 해석할 수 없습니다.",
+        "here_fail_helper_load": "현재 위치 적용 실패: 위치 조회 helper를 찾을 수 없습니다.",
+        "here_fail_helper_timeout": "현재 위치 적용 실패: 위치 조회 helper 응답이 너무 오래 걸립니다. 위치 권한을 확인한 뒤 다시 시도하세요.",
+        "here_compile_notice": "현재 위치 helper를 처음 준비하는 중입니다. 잠시만 기다려 주세요...",
+        "here_host_description": "현재 Mac 위치",
         "menu_set": "위치지정",
+        "menu_here": "현재위치",
         "menu_add": "추가",
         "menu_delete": "삭제",
         "menu_sort": "정렬",
         "menu_exit": "종료",
         "help_set": "설정 : ↑↓ 이동 후 선택 혹은 번호 입력, Ctrl+O:지도 열기",
+        "help_here": "현재위치 : 현재 Mac 위치를 시뮬레이터에 적용",
         "help_add": "추가 : <latitude> <longitude> <description>",
         "help_delete": "삭제 : ↑↓ 이동 후 Enter, y/n 확인",
         "help_sort": "정렬 : 1:Latitude   2:Longitude   3:Description",
@@ -77,6 +100,7 @@ I18N: dict[str, dict[str, str]] = {
             "실행 예시:\n"
             "  pinny           보유 목록 표시\n"
             "  pinny 2         2번 위치 즉시 적용\n"
+            "  pinny 0         현재 Mac 위치 적용\n"
             "  pinny tui       TUI 실행\n"
             "  pinny add ...   위치 추가\n"
             "  pinny cover ... 전체 덮어쓰기\n"
@@ -98,7 +122,7 @@ I18N: dict[str, dict[str, str]] = {
         "argparse_download_help": "저장된 전체 목록을 locations.json 파일로 다운로드",
         "argparse_tui_help": "TUI 스타일 인터랙티브 실행",
         "json_error": "JSON 파싱 오류: {error}",
-        "apply_usage": "사용법: pinny <번호>",
+        "apply_usage": "사용법: pinny 0 또는 pinny <번호>",
         "apply_done_with_desc": "{message} ({desc})",
     },
     "en": {
@@ -114,12 +138,27 @@ I18N: dict[str, dict[str, str]] = {
         "set_done": "Location set: {lat:.6f}, {lon:.6f}",
         "set_unknown_error": "Unknown error",
         "set_fail": "Set failed: {detail}",
+        "here_fail_no_xcrun": "Apply current Mac location failed: xcrun command not found.",
+        "here_done": "Applied current Mac location: {lat:.6f}, {lon:.6f}",
+        "here_fail": "Apply current Mac location failed: {detail}",
+        "here_fail_permission_denied": "Apply current Mac location failed: location permission was denied. Open System Settings > Privacy & Security > Location Services, allow PinnyHostLocation, then run the command again.",
+        "here_fail_location_services_disabled": "Apply current Mac location failed: Location Services are disabled on this Mac.",
+        "here_fail_timeout": "Apply current Mac location failed: timed out while fetching the current location.",
+        "here_fail_location_unavailable": "Apply current Mac location failed: current location is unavailable.",
+        "here_fail_location_error": "Apply current Mac location failed: {detail}",
+        "here_fail_invalid_response": "Apply current Mac location failed: could not parse the location helper output.",
+        "here_fail_helper_load": "Apply current Mac location failed: could not find the location helper.",
+        "here_fail_helper_timeout": "Apply current Mac location failed: the location helper took too long to respond. Check location permission, then try again.",
+        "here_compile_notice": "Preparing the current-location helper for the first run. Please wait...",
+        "here_host_description": "Current Mac Location",
         "menu_set": "Set",
+        "menu_here": "Current",
         "menu_add": "Add",
         "menu_delete": "Delete",
         "menu_sort": "Sort",
         "menu_exit": "Exit",
         "help_set": "Set: move with ↑↓ then Enter, type number, or press Ctrl+O for map",
+        "help_here": "Current: apply the current Mac location to booted simulators",
         "help_add": "Add: <latitude> <longitude> <description>",
         "help_delete": "Delete: move with ↑↓ then Enter, confirm with y/n",
         "help_sort": "Sort: 1:Latitude   2:Longitude   3:Description",
@@ -158,6 +197,7 @@ I18N: dict[str, dict[str, str]] = {
             "Examples:\n"
             "  pinny           Show saved locations\n"
             "  pinny 2         Apply location #2\n"
+            "  pinny 0         Apply current Mac location\n"
             "  pinny tui       Run interactive TUI\n"
             "  pinny add ...   Add locations\n"
             "  pinny cover ... Replace all\n"
@@ -179,7 +219,7 @@ I18N: dict[str, dict[str, str]] = {
         "argparse_download_help": "Download all saved locations as locations.json",
         "argparse_tui_help": "Run interactive TUI",
         "json_error": "JSON parse error: {error}",
-        "apply_usage": "Usage: pinny <number>",
+        "apply_usage": "Usage: pinny 0 or pinny <number>",
         "apply_done_with_desc": "{message} ({desc})",
     },
 }
@@ -429,6 +469,184 @@ def run_simctl_set_location(location: Location) -> tuple[bool, str]:
     )
 
 
+def _host_location_helper() -> Traversable:
+    return importlib.resources.files("pinny").joinpath("host_location.swift")
+
+
+def _host_location_cache_root() -> Path:
+    return Path.home() / "Library" / "Caches" / "pinny" / "host-location"
+
+
+def _host_location_cached_app(helper_path: Path) -> Path:
+    digest = hashlib.sha256()
+    digest.update(helper_path.read_bytes())
+    digest.update(sys.platform.encode("utf-8"))
+    digest.update(os.uname().machine.encode("utf-8"))
+    return _host_location_cache_root() / digest.hexdigest() / f"{HOST_LOCATION_APP_NAME}.app"
+
+
+def _host_location_process_detail(proc: subprocess.CompletedProcess[str]) -> str:
+    detail = proc.stderr.strip() or proc.stdout.strip() or msg("set_unknown_error")
+    return detail.splitlines()[-1]
+
+
+def _write_host_location_app_metadata(app_path: Path, entitlements_path: Path) -> None:
+    contents_path = app_path / "Contents"
+    contents_path.mkdir(parents=True, exist_ok=True)
+    (contents_path / "MacOS").mkdir(exist_ok=True)
+
+    info = {
+        "CFBundleExecutable": HOST_LOCATION_APP_NAME,
+        "CFBundleIdentifier": HOST_LOCATION_BUNDLE_ID,
+        "CFBundleName": HOST_LOCATION_APP_NAME,
+        "CFBundlePackageType": "APPL",
+        "NSLocationUsageDescription": (
+            "Pinny uses your current Mac location to set the booted simulator location."
+        ),
+        "NSLocationWhenInUseUsageDescription": (
+            "Pinny uses your current Mac location to set the booted simulator location."
+        ),
+    }
+    with (contents_path / "Info.plist").open("wb") as f:
+        plistlib.dump(info, f)
+
+    entitlements = {"com.apple.security.personal-information.location": True}
+    with entitlements_path.open("wb") as f:
+        plistlib.dump(entitlements, f)
+
+
+def _host_location_error_message(error_code: str, detail: str | None = None) -> str:
+    if error_code == "permission_denied":
+        return msg("here_fail_permission_denied")
+    if error_code == "location_services_disabled":
+        return msg("here_fail_location_services_disabled")
+    if error_code == "timeout":
+        return msg("here_fail_timeout")
+    if error_code == "location_unavailable":
+        return msg("here_fail_location_unavailable")
+    if error_code == "location_error":
+        return msg("here_fail_location_error", detail=detail or msg("set_unknown_error"))
+    return msg("here_fail", detail=detail or error_code)
+
+
+def get_host_current_location(
+    progress: Callable[[str], None] | None = None,
+) -> tuple[bool, Location | str]:
+    helper = _host_location_helper()
+    if not helper.is_file():
+        return False, msg("here_fail_helper_load")
+
+    try:
+        with importlib.resources.as_file(helper) as helper_path:
+            with tempfile.TemporaryDirectory(prefix="pinny-host-location-") as td:
+                work_path = Path(td)
+                app_path = _host_location_cached_app(helper_path)
+                executable_path = app_path / "Contents" / "MacOS" / HOST_LOCATION_APP_NAME
+                ready_path = app_path / "Contents" / ".pinny-ready"
+                entitlements_path = app_path.parent / f"{HOST_LOCATION_APP_NAME}.entitlements.plist"
+                output_path = work_path / "location.json"
+
+                if not (executable_path.is_file() and ready_path.is_file()):
+                    if progress is not None:
+                        progress(msg("here_compile_notice"))
+                    if app_path.exists():
+                        shutil.rmtree(app_path)
+                    _write_host_location_app_metadata(app_path, entitlements_path)
+
+                    compile_proc = subprocess.run(
+                        ["xcrun", "swiftc", str(helper_path), "-o", str(executable_path)],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=HOST_LOCATION_HELPER_TIMEOUT_SECONDS,
+                    )
+                    if compile_proc.returncode != 0:
+                        return False, msg(
+                            "here_fail",
+                            detail=_host_location_process_detail(compile_proc),
+                        )
+
+                    sign_proc = subprocess.run(
+                        [
+                            "codesign",
+                            "--force",
+                            "--sign",
+                            "-",
+                            "--entitlements",
+                            str(entitlements_path),
+                            str(app_path),
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=HOST_LOCATION_HELPER_TIMEOUT_SECONDS,
+                    )
+                    if sign_proc.returncode != 0:
+                        return False, msg(
+                            "here_fail",
+                            detail=_host_location_process_detail(sign_proc),
+                        )
+                    ready_path.write_text("1\n", encoding="utf-8")
+
+                proc = subprocess.run(
+                    ["open", "-W", str(app_path), "--args", str(output_path)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=HOST_LOCATION_HELPER_TIMEOUT_SECONDS,
+                )
+                if output_path.is_file():
+                    raw_output = output_path.read_text(encoding="utf-8").strip()
+                else:
+                    raw_output = proc.stdout.strip() or proc.stderr.strip()
+    except FileNotFoundError:
+        return False, msg("here_fail_no_xcrun")
+    except subprocess.TimeoutExpired:
+        return False, msg("here_fail_helper_timeout")
+
+    try:
+        payload = json.loads(raw_output)
+    except json.JSONDecodeError:
+        if proc.returncode != 0 and raw_output:
+            return False, msg("here_fail", detail=raw_output.splitlines()[-1])
+        return False, msg("here_fail_invalid_response")
+
+    error_code = payload.get("error")
+    if isinstance(error_code, str):
+        detail = payload.get("detail")
+        detail_text = detail if isinstance(detail, str) else None
+        return False, _host_location_error_message(error_code, detail_text)
+
+    if proc.returncode != 0:
+        return False, msg("here_fail_invalid_response")
+
+    latitude = payload.get("latitude")
+    longitude = payload.get("longitude")
+    try:
+        location = Location(
+            latitude=float(latitude),
+            longitude=float(longitude),
+            description=msg("here_host_description"),
+        )
+    except (TypeError, ValueError):
+        return False, msg("here_fail_invalid_response")
+    return True, location
+
+
+def run_simctl_set_to_host_location(
+    progress: Callable[[str], None] | None = None,
+) -> tuple[bool, str]:
+    ok, result = get_host_current_location(progress=progress)
+    if not ok:
+        return False, str(result)
+
+    location = result
+    ok, message = run_simctl_set_location(location)
+    if not ok:
+        return False, message
+    return True, msg("here_done", lat=location.latitude, lon=location.longitude)
+
+
 def format_locations_table(locations: list[Location]) -> list[str]:
     no_width = max(2, len(str(len(locations))))
     lines = [
@@ -445,16 +663,18 @@ def format_locations_table(locations: list[Location]) -> list[str]:
 
 class PinnyTUI:
     MENU_SET = 0
-    MENU_ADD = 1
-    MENU_DELETE = 2
-    MENU_SORT = 3
-    MENU_EXIT = 4
+    MENU_HERE = 1
+    MENU_ADD = 2
+    MENU_DELETE = 3
+    MENU_SORT = 4
+    MENU_EXIT = 5
 
     def __init__(self, data_path: Path):
         self.data_path = data_path
         self.locations = load_or_seed_locations(data_path)
         self.menus = [
             msg("menu_set"),
+            msg("menu_here"),
             msg("menu_add"),
             msg("menu_delete"),
             msg("menu_sort"),
@@ -462,6 +682,7 @@ class PinnyTUI:
         ]
         self.menu_help = [
             msg("help_set"),
+            msg("help_here"),
             msg("help_add"),
             msg("help_delete"),
             msg("help_sort"),
@@ -628,6 +849,9 @@ class PinnyTUI:
         if self.menu_index == self.MENU_SET:
             self._action_set_location()
             return False
+        if self.menu_index == self.MENU_HERE:
+            self._action_here_location()
+            return False
         if self.menu_index == self.MENU_ADD:
             self._action_add_location()
             return False
@@ -695,6 +919,12 @@ class PinnyTUI:
             self.status = msg("status_open_map_done", url=url)
         else:
             self.status = msg("status_open_map_failed")
+
+    def _action_here_location(self) -> None:
+        _, message = run_simctl_set_to_host_location()
+        self.status = message
+        self.input_buffer = ""
+        self.input_cursor = 0
 
     def _action_add_location(self) -> None:
         raw = self.input_buffer.strip()
@@ -952,6 +1182,14 @@ def command_download(data_path: Path | None = None, output_path: Path | None = N
     return 0
 
 
+def command_apply_host_location() -> int:
+    _, message = run_simctl_set_to_host_location(
+        progress=lambda text: print(text, file=sys.stderr)
+    )
+    print(message)
+    return 0
+
+
 def command_list(data_path: Path | None = None) -> int:
     locations = load_or_seed_locations(data_path)
     for line in format_locations_table(locations):
@@ -960,6 +1198,9 @@ def command_list(data_path: Path | None = None) -> int:
 
 
 def command_apply_index(index: int, data_path: Path | None = None) -> int:
+    if index == 0:
+        return command_apply_host_location()
+
     locations = load_or_seed_locations(data_path)
     target_index = index - 1
     if target_index < 0 or target_index >= len(locations):

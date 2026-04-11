@@ -1,9 +1,10 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ from pinny.app import (
     command_download,
     command_list,
     find_booted_device_udids,
+    get_host_current_location,
     load_default_locations,
     load_json_locations,
     load_locations,
@@ -24,6 +26,7 @@ from pinny.app import (
     merge_unique,
     msg,
     parse_inline_location,
+    run_simctl_set_to_host_location,
     run_simctl_set_location,
     save_locations,
 )
@@ -246,6 +249,232 @@ class PinnyTests(unittest.TestCase):
             ],
         )
 
+    def test_get_host_current_location_returns_location(self) -> None:
+        helper_json = {"latitude": 37.551169, "longitude": 126.988227}
+
+        with tempfile.TemporaryDirectory() as td:
+            helper_path = Path(td) / "host_location.swift"
+            helper_path.write_text("import CoreLocation\n", encoding="utf-8")
+
+            with patch("pinny.app._host_location_helper") as helper, patch(
+                "pinny.app.importlib.resources.as_file"
+            ) as as_file, patch("pinny.app._host_location_cache_root", return_value=Path(td) / "cache"), patch(
+                "pinny.app.subprocess.run"
+            ) as run:
+                helper.return_value.is_file.return_value = True
+                as_file.return_value.__enter__.return_value = helper_path
+                as_file.return_value.__exit__.return_value = False
+
+                def run_helper(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                    if cmd[0] == "xcrun":
+                        Path(cmd[-1]).write_text("binary", encoding="utf-8")
+                    if cmd[0] == "open":
+                        Path(cmd[-1]).write_text(json.dumps(helper_json), encoding="utf-8")
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+                run.side_effect = run_helper
+
+                ok, result = get_host_current_location()
+
+        self.assertTrue(ok)
+        self.assertIsInstance(result, Location)
+        assert isinstance(result, Location)
+        self.assertAlmostEqual(result.latitude, 37.551169)
+        self.assertAlmostEqual(result.longitude, 126.988227)
+        self.assertEqual(result.description, msg("here_host_description"))
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[0][0:2], ["xcrun", "swiftc"])
+        self.assertEqual(commands[1][0], "codesign")
+        self.assertEqual(commands[2][0], "open")
+
+    def test_get_host_current_location_caches_helper_after_first_compile(self) -> None:
+        helper_json = {"latitude": 37.551169, "longitude": 126.988227}
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            helper_path = root / "host_location.swift"
+            helper_path.write_text("import CoreLocation\n", encoding="utf-8")
+
+            with patch("pinny.app._host_location_helper") as helper, patch(
+                "pinny.app.importlib.resources.as_file"
+            ) as as_file, patch("pinny.app._host_location_cache_root", return_value=root / "cache"), patch(
+                "pinny.app.subprocess.run"
+            ) as run:
+                helper.return_value.is_file.return_value = True
+                as_file.return_value.__enter__.return_value = helper_path
+                as_file.return_value.__exit__.return_value = False
+
+                def run_helper(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                    if cmd[0] == "xcrun":
+                        Path(cmd[-1]).write_text("binary", encoding="utf-8")
+                    if cmd[0] == "open":
+                        Path(cmd[-1]).write_text(json.dumps(helper_json), encoding="utf-8")
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+                run.side_effect = run_helper
+                first_messages: list[str] = []
+                second_messages: list[str] = []
+
+                first_ok, _ = get_host_current_location(progress=first_messages.append)
+                second_ok, _ = get_host_current_location(progress=second_messages.append)
+
+        self.assertTrue(first_ok)
+        self.assertTrue(second_ok)
+        self.assertEqual(first_messages, [msg("here_compile_notice")])
+        self.assertEqual(second_messages, [])
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual([cmd[0] for cmd in commands], ["xcrun", "codesign", "open", "open"])
+
+    def test_get_host_current_location_handles_permission_denied(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            helper_path = Path(td) / "host_location.swift"
+            helper_path.write_text("import CoreLocation\n", encoding="utf-8")
+
+            with patch("pinny.app._host_location_helper") as helper, patch(
+                "pinny.app.importlib.resources.as_file"
+            ) as as_file, patch("pinny.app._host_location_cache_root", return_value=Path(td) / "cache"), patch(
+                "pinny.app.subprocess.run"
+            ) as run:
+                helper.return_value.is_file.return_value = True
+                as_file.return_value.__enter__.return_value = helper_path
+                as_file.return_value.__exit__.return_value = False
+
+                def run_helper(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                    if cmd[0] == "xcrun":
+                        Path(cmd[-1]).write_text("binary", encoding="utf-8")
+                    if cmd[0] == "open":
+                        Path(cmd[-1]).write_text(
+                            json.dumps({"error": "permission_denied"}),
+                            encoding="utf-8",
+                        )
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+                run.side_effect = run_helper
+
+                ok, result = get_host_current_location()
+
+        self.assertFalse(ok)
+        self.assertEqual(result, msg("here_fail_permission_denied"))
+        self.assertIn("시스템 설정", str(result))
+        self.assertIn("Location Services", str(result))
+
+    def test_get_host_current_location_handles_user_no_response_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            helper_path = Path(td) / "host_location.swift"
+            helper_path.write_text("import CoreLocation\n", encoding="utf-8")
+
+            with patch("pinny.app._host_location_helper") as helper, patch(
+                "pinny.app.importlib.resources.as_file"
+            ) as as_file, patch("pinny.app._host_location_cache_root", return_value=Path(td) / "cache"), patch(
+                "pinny.app.subprocess.run"
+            ) as run:
+                helper.return_value.is_file.return_value = True
+                as_file.return_value.__enter__.return_value = helper_path
+                as_file.return_value.__exit__.return_value = False
+
+                def run_helper(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                    if cmd[0] == "xcrun":
+                        Path(cmd[-1]).write_text("binary", encoding="utf-8")
+                    if cmd[0] == "open":
+                        Path(cmd[-1]).write_text(json.dumps({"error": "timeout"}), encoding="utf-8")
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+                run.side_effect = run_helper
+
+                ok, result = get_host_current_location()
+
+        self.assertFalse(ok)
+        self.assertEqual(result, msg("here_fail_timeout"))
+
+    def test_get_host_current_location_handles_invalid_response(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            helper_path = Path(td) / "host_location.swift"
+            helper_path.write_text("import CoreLocation\n", encoding="utf-8")
+
+            with patch("pinny.app._host_location_helper") as helper, patch(
+                "pinny.app.importlib.resources.as_file"
+            ) as as_file, patch("pinny.app._host_location_cache_root", return_value=Path(td) / "cache"), patch(
+                "pinny.app.subprocess.run"
+            ) as run:
+                helper.return_value.is_file.return_value = True
+                as_file.return_value.__enter__.return_value = helper_path
+                as_file.return_value.__exit__.return_value = False
+
+                def run_helper(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                    if cmd[0] == "xcrun":
+                        Path(cmd[-1]).write_text("binary", encoding="utf-8")
+                    if cmd[0] == "open":
+                        Path(cmd[-1]).write_text("not-json", encoding="utf-8")
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+                run.side_effect = run_helper
+
+                ok, result = get_host_current_location()
+
+        self.assertFalse(ok)
+        self.assertEqual(result, msg("here_fail_invalid_response"))
+
+    def test_get_host_current_location_handles_xcrun_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            helper_path = Path(td) / "host_location.swift"
+            helper_path.write_text("import CoreLocation\n", encoding="utf-8")
+
+            with patch("pinny.app._host_location_helper") as helper, patch(
+                "pinny.app.importlib.resources.as_file"
+            ) as as_file, patch("pinny.app._host_location_cache_root", return_value=Path(td) / "cache"), patch(
+                "pinny.app.subprocess.run", side_effect=FileNotFoundError
+            ):
+                helper.return_value.is_file.return_value = True
+                as_file.return_value.__enter__.return_value = helper_path
+                as_file.return_value.__exit__.return_value = False
+
+                ok, result = get_host_current_location()
+
+        self.assertFalse(ok)
+        self.assertEqual(result, msg("here_fail_no_xcrun"))
+
+    def test_get_host_current_location_handles_helper_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            helper_path = Path(td) / "host_location.swift"
+            helper_path.write_text("import CoreLocation\n", encoding="utf-8")
+
+            with patch("pinny.app._host_location_helper") as helper, patch(
+                "pinny.app.importlib.resources.as_file"
+            ) as as_file, patch("pinny.app._host_location_cache_root", return_value=Path(td) / "cache"), patch(
+                "pinny.app.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd=["xcrun"], timeout=30),
+            ):
+                helper.return_value.is_file.return_value = True
+                as_file.return_value.__enter__.return_value = helper_path
+                as_file.return_value.__exit__.return_value = False
+
+                ok, result = get_host_current_location()
+
+        self.assertFalse(ok)
+        self.assertEqual(result, msg("here_fail_helper_timeout"))
+
+    def test_run_simctl_set_to_host_location_delegates_to_set(self) -> None:
+        host_location = Location(37.551169, 126.988227, msg("here_host_description"))
+
+        with patch("pinny.app.get_host_current_location", return_value=(True, host_location)), patch(
+            "pinny.app.run_simctl_set_location", return_value=(True, "set ok")
+        ) as run_set:
+            ok, message = run_simctl_set_to_host_location()
+
+        self.assertTrue(ok)
+        run_set.assert_called_once_with(host_location)
+        self.assertIn("37.551169", message)
+
+    def test_run_simctl_set_to_host_location_returns_fetch_error(self) -> None:
+        with patch(
+            "pinny.app.get_host_current_location", return_value=(False, msg("here_fail_timeout"))
+        ), patch("pinny.app.run_simctl_set_location") as run_set:
+            ok, message = run_simctl_set_to_host_location()
+
+        self.assertFalse(ok)
+        run_set.assert_not_called()
+        self.assertEqual(message, msg("here_fail_timeout"))
+
     def test_command_apply_index_uses_number(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             data_path = Path(td) / "locations.json"
@@ -282,6 +511,43 @@ class PinnyTests(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 self.assertIn("applied", apply_buffer.getvalue())
 
+    def test_command_apply_index_zero_uses_current_mac_location(self) -> None:
+        buffer = io.StringIO()
+        with patch("pinny.app.run_simctl_set_to_host_location", return_value=(True, "current ok")):
+            with redirect_stdout(buffer):
+                rc = command_apply_index(0)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("current ok", buffer.getvalue())
+
+    def test_command_apply_index_zero_prints_compile_notice_to_stderr(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        def fetch(progress=None):
+            if progress is not None:
+                progress(msg("here_compile_notice"))
+            return False, "failed"
+
+        with patch("pinny.app.get_host_current_location", side_effect=fetch), patch(
+            "pinny.app.run_simctl_set_location"
+        ):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = command_apply_index(0)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("failed", stdout.getvalue())
+        self.assertIn(msg("here_compile_notice"), stderr.getvalue())
+
+    def test_main_zero_mode(self) -> None:
+        buffer = io.StringIO()
+        with patch("pinny.app.run_simctl_set_to_host_location", return_value=(True, "current applied")):
+            with redirect_stdout(buffer):
+                rc = main(["0"])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("current applied", buffer.getvalue())
+
     def test_delete_requires_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             data_path = Path(td) / "locations.json"
@@ -304,6 +570,38 @@ class PinnyTests(unittest.TestCase):
             self.assertIsNone(app.pending_delete_index)
             self.assertEqual(len(app.locations), 0)
             self.assertEqual(len(load_locations(data_path)), 0)
+
+    def test_tui_here_action_updates_status_without_modifying_saved_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            data_path = Path(td) / "locations.json"
+            save_locations([Location(37.5532, 126.9837, "서울역")], data_path)
+
+            app = PinnyTUI(data_path)
+            app.menu_index = PinnyTUI.MENU_HERE
+            app.input_buffer = "123"
+            app.input_cursor = 3
+
+            with patch(
+                "pinny.app.run_simctl_set_to_host_location", return_value=(True, "host applied")
+            ) as here_run:
+                app._action_here_location()
+
+            here_run.assert_called_once_with()
+            self.assertEqual(app.status, "host applied")
+            self.assertEqual(app.input_buffer, "")
+            self.assertEqual(app.input_cursor, 0)
+            self.assertEqual(len(load_locations(data_path)), 1)
+            self.assertEqual(load_locations(data_path)[0].description, "서울역")
+
+    def test_tui_includes_here_menu(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            data_path = Path(td) / "locations.json"
+            save_locations([Location(37.5532, 126.9837, "서울역")], data_path)
+
+            app = PinnyTUI(data_path)
+
+            self.assertEqual(app.menus[PinnyTUI.MENU_HERE], msg("menu_here"))
+            self.assertEqual(app.menu_help[PinnyTUI.MENU_HERE], msg("help_here"))
 
     def test_command_add_cover_download_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as td:

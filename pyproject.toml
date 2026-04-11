@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pinny"
-version = "0.1.2"
+version = "0.2.0"
 description = "TUI wrapper for xcrun simctl location"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,4 +21,4 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-pinny = ["default_locations.json"]
+pinny = ["default_locations.json", "host_location.swift"]
